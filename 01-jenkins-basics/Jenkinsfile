@@ -4,7 +4,7 @@ pipeline {
     stages {
 
 
-        stage('Setup') {
+        stage('Setup1') {
             steps {
                 withCredentials([usernamePassword(credentialsId: 'server-creds', usernameVariable: "myuser", passwordVariable: "mypassword")]) {
 
