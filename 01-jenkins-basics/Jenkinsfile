@@ -3,38 +3,28 @@ pipeline {
 
     stages {
 
-
-        stage('Setup1') {
+        stage('Setup') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'server-creds', usernameVariable: "myuser", passwordVariable: "mypassword")]) {
-
-                    sh '''
-                    echo ${myuser}
-                    echo ${mypassword}
-                    '''
-                }
-
-                sh "pip install -r requirements.txt"
-            
+                sh 'pip install -r requirements.txt'
             }
         }
+
         stage('Test') {
             steps {
-                sh "pytest"
-                
+                sh 'pytest'
             }
-        }    
+        }
+
         stage('Deployment') {
             input {
-                message "Do you want to proceed further?"
-                ok "Yes"
+                message 'Do you want to proceed further?'
+                ok 'Yes'
             }
             steps {
-                echo "Running Deployment"
-                
+                echo 'Running Deployment'
             }
-        } 
-        
-            
+        }
+
     }
 }
+
