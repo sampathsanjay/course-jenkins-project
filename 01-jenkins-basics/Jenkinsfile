@@ -2,14 +2,15 @@ pipeline {
   agent any
 
   environment {
-    SERVER_IP = credentials('Prod-server-ip') // store as Secret Text
-    APP_DIR   = '01-jenkins-basics'
-    ZIP_NAME  = 'myapp.zip'
-    REMOTE_DIR = 'app'
-    SERVICE   = 'flaskapp.service'
+    SERVER_IP   = credentials('Prod-server-ip')
+    APP_DIR     = '01-jenkins-basics'
+    ARCHIVE     = 'myapp.tar.gz'
+    REMOTE_DIR  = 'app'
+    SERVICE     = 'flaskapp.service'
   }
 
   stages {
+
     stage('Setup') {
       steps {
         dir("${env.APP_DIR}") {
@@ -38,9 +39,13 @@ pipeline {
       steps {
         dir("${env.APP_DIR}") {
           sh """
-            rm -f ${env.ZIP_NAME}
-            zip -r ${env.ZIP_NAME} . \
-              -x ".git/*" -x ".venv/*" -x "__pycache__/*" -x "*.pyc"
+            rm -f ${ARCHIVE}
+            tar -czf ${ARCHIVE} . \
+              --exclude=.git \
+              --exclude=.venv \
+              --exclude=venv \
+              --exclude=__pycache__ \
+              --exclude='*.pyc'
           """
         }
       }
@@ -57,29 +62,30 @@ pipeline {
                           keyFileVariable: 'MY_SSH_KEY',
                           usernameVariable: 'SSH_USER')]) {
 
+          // Upload tar file
           sh """
             scp -i $MY_SSH_KEY -o StrictHostKeyChecking=no \
-              ${env.APP_DIR}/${env.ZIP_NAME} \
-              $SSH_USER@${env.SERVER_IP}:/home/$SSH_USER/${env.ZIP_NAME}
+              ${APP_DIR}/${ARCHIVE} \
+              $SSH_USER@${SERVER_IP}:/home/$SSH_USER/
           """
 
-          // NOTE: no single-quoted heredoc so $SSH_USER expands locally before sending
+          // Remote deployment
           sh """
-            ssh -i $MY_SSH_KEY -o StrictHostKeyChecking=no $SSH_USER@${env.SERVER_IP} << EOF
+            ssh -i $MY_SSH_KEY -o StrictHostKeyChecking=no $SSH_USER@${SERVER_IP} << EOF
               set -e
 
-              mkdir -p /home/$SSH_USER/${env.REMOTE_DIR}
-              unzip -o /home/$SSH_USER/${env.ZIP_NAME} -d /home/$SSH_USER/${env.REMOTE_DIR}
+              mkdir -p /home/$SSH_USER/${REMOTE_DIR}
+              tar -xzf /home/$SSH_USER/${ARCHIVE} -C /home/$SSH_USER/${REMOTE_DIR}
 
-              cd /home/$SSH_USER/${env.REMOTE_DIR}
+              cd /home/$SSH_USER/${REMOTE_DIR}
 
               python3 -m venv venv
               . venv/bin/activate
               pip install --upgrade pip
               pip install -r requirements.txt
 
-              sudo systemctl restart ${env.SERVICE}
-              sudo systemctl is-active --quiet ${env.SERVICE}
+              sudo systemctl restart ${SERVICE}
+              sudo systemctl is-active --quiet ${SERVICE}
 
               echo "Deployment Successful!"
 EOF
