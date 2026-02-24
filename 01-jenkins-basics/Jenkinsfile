@@ -2,18 +2,18 @@ pipeline {
   agent any
 
   environment {
-    SERVER_IP   = credentials('Prod-server-ip')
-    APP_DIR     = '01-jenkins-basics'
-    ARCHIVE     = 'myapp.tar.gz'
-    REMOTE_DIR  = 'app'
-    SERVICE     = 'flaskapp.service'
+    SERVER_IP  = credentials('Prod-server-ip')
+    APP_DIR    = '01-jenkins-basics'
+    ARCHIVE    = 'myapp.tar.gz'
+    REMOTE_DIR = 'app'
+    SERVICE    = 'flaskapp.service'
   }
 
   stages {
 
     stage('Setup') {
       steps {
-        dir("${env.APP_DIR}") {
+        dir("${APP_DIR}") {
           sh '''
             python3 -m venv .venv
             . .venv/bin/activate
@@ -26,7 +26,7 @@ pipeline {
 
     stage('Test') {
       steps {
-        dir("${env.APP_DIR}") {
+        dir("${APP_DIR}") {
           sh '''
             . .venv/bin/activate
             pytest -q
@@ -37,15 +37,16 @@ pipeline {
 
     stage('Package') {
       steps {
-        dir("${env.APP_DIR}") {
+        dir("${APP_DIR}") {
           sh """
             rm -f ${ARCHIVE}
-            tar -czf ${ARCHIVE} . \
-              --exclude=.git \
-              --exclude=.venv \
-              --exclude=venv \
-              --exclude=__pycache__ \
-              --exclude='*.pyc'
+            tar --warning=no-file-changed \
+                --exclude=.git \
+                --exclude=.venv \
+                --exclude=venv \
+                --exclude=__pycache__ \
+                --exclude='*.pyc' \
+                -czf ${ARCHIVE} .
           """
         }
       }
@@ -53,20 +54,24 @@ pipeline {
 
     stage('Deploy to Prod') {
       input {
-        message "Deploy to ${env.SERVER_IP}?"
+        message "Deploy to ${SERVER_IP}?"
         ok "Yes, Deploy"
       }
 
       steps {
-        withCredentials([sshUserPrivateKey(credentialsId: 'SSH-KEY',
-                          keyFileVariable: 'MY_SSH_KEY',
-                          usernameVariable: 'SSH_USER')]) {
+        withCredentials([
+          sshUserPrivateKey(
+            credentialsId: 'SSH-KEY',
+            keyFileVariable: 'MY_SSH_KEY',
+            usernameVariable: 'SSH_USER'
+          )
+        ]) {
 
-          // Upload tar file
+          // Upload archive
           sh """
             scp -i $MY_SSH_KEY -o StrictHostKeyChecking=no \
-              ${APP_DIR}/${ARCHIVE} \
-              $SSH_USER@${SERVER_IP}:/home/$SSH_USER/
+            ${APP_DIR}/${ARCHIVE} \
+            $SSH_USER@${SERVER_IP}:/home/$SSH_USER/
           """
 
           // Remote deployment
@@ -96,6 +101,12 @@ EOF
   }
 
   post {
+    success {
+      echo 'Pipeline completed successfully!'
+    }
+    failure {
+      echo 'Pipeline failed. Check logs.'
+    }
     always {
       cleanWs()
     }
