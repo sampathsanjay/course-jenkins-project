@@ -13,7 +13,7 @@ pipeline {
 
     stage('Setup') {
       steps {
-        dir("${APP_DIR}") {
+        dir("${env.APP_DIR}") {
           sh '''
             python3 -m venv .venv
             . .venv/bin/activate
@@ -26,7 +26,7 @@ pipeline {
 
     stage('Test') {
       steps {
-        dir("${APP_DIR}") {
+        dir("${env.APP_DIR}") {
           sh '''
             . .venv/bin/activate
             pytest -q
@@ -37,16 +37,16 @@ pipeline {
 
     stage('Package') {
       steps {
-        dir("${APP_DIR}") {
+        dir("${env.APP_DIR}") {
           sh """
-            rm -f ${ARCHIVE}
+            rm -f ${env.ARCHIVE}
             tar --warning=no-file-changed \
                 --exclude=.git \
                 --exclude=.venv \
                 --exclude=venv \
                 --exclude=__pycache__ \
                 --exclude='*.pyc' \
-                -czf ${ARCHIVE} .
+                -czf ${env.ARCHIVE} .
           """
         }
       }
@@ -54,7 +54,7 @@ pipeline {
 
     stage('Deploy to Prod') {
       input {
-        message "Deploy to ${SERVER_IP}?"
+        message "Deploy to ${env.SERVER_IP}?"
         ok "Yes, Deploy"
       }
 
@@ -67,30 +67,28 @@ pipeline {
           )
         ]) {
 
-          // Upload archive
           sh """
-            scp -i $MY_SSH_KEY -o StrictHostKeyChecking=no \
-            ${APP_DIR}/${ARCHIVE} \
-            $SSH_USER@${SERVER_IP}:/home/$SSH_USER/
+            scp -i \$MY_SSH_KEY -o StrictHostKeyChecking=no \
+              ${env.APP_DIR}/${env.ARCHIVE} \
+              \$SSH_USER@${env.SERVER_IP}:/home/\$SSH_USER/
           """
 
-          // Remote deployment
           sh """
-            ssh -i $MY_SSH_KEY -o StrictHostKeyChecking=no $SSH_USER@${SERVER_IP} << EOF
+            ssh -i \$MY_SSH_KEY -o StrictHostKeyChecking=no \$SSH_USER@${env.SERVER_IP} << EOF
               set -e
 
-              mkdir -p /home/$SSH_USER/${REMOTE_DIR}
-              tar -xzf /home/$SSH_USER/${ARCHIVE} -C /home/$SSH_USER/${REMOTE_DIR}
+              mkdir -p /home/\$SSH_USER/${env.REMOTE_DIR}
+              tar -xzf /home/\$SSH_USER/${env.ARCHIVE} -C /home/\$SSH_USER/${env.REMOTE_DIR}
 
-              cd /home/$SSH_USER/${REMOTE_DIR}
+              cd /home/\$SSH_USER/${env.REMOTE_DIR}
 
               python3 -m venv venv
               . venv/bin/activate
               pip install --upgrade pip
               pip install -r requirements.txt
 
-              sudo systemctl restart ${SERVICE}
-              sudo systemctl is-active --quiet ${SERVICE}
+              sudo systemctl restart ${env.SERVICE}
+              sudo systemctl is-active --quiet ${env.SERVICE}
 
               echo "Deployment Successful!"
 EOF
@@ -101,12 +99,6 @@ EOF
   }
 
   post {
-    success {
-      echo 'Pipeline completed successfully!'
-    }
-    failure {
-      echo 'Pipeline failed. Check logs.'
-    }
     always {
       cleanWs()
     }
