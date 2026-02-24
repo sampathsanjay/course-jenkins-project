@@ -2,15 +2,14 @@ pipeline {
   agent any
 
   environment {
-    SERVER_IP  = credentials('Prod-server-ip')
+    SERVER_IP  = credentials('Prod-server-ip') // Secret Text
     APP_DIR    = '01-jenkins-basics'
     ARCHIVE    = 'myapp.tar.gz'
     REMOTE_DIR = 'app'
-    SERVICE    = 'flaskapp.service'
+    APP_PORT   = '5000'
   }
 
   stages {
-
     stage('Setup') {
       steps {
         dir("${env.APP_DIR}") {
@@ -38,24 +37,24 @@ pipeline {
     stage('Package') {
       steps {
         dir("${env.APP_DIR}") {
-          sh """
-            rm -f ${env.ARCHIVE}
+          sh '''
+            rm -f myapp.tar.gz
             tar --warning=no-file-changed \
                 --exclude=.git \
                 --exclude=.venv \
                 --exclude=venv \
                 --exclude=__pycache__ \
                 --exclude='*.pyc' \
-                -czf ${env.ARCHIVE} .
-          """
+                -czf myapp.tar.gz .
+          '''
         }
       }
     }
 
     stage('Deploy to Prod') {
       input {
-        message "Deploy to ${env.SERVER_IP}?"
-        ok "Yes, Deploy"
+        message "Deploy to production?"
+        ok "Deploy"
       }
 
       steps {
@@ -66,41 +65,53 @@ pipeline {
             usernameVariable: 'SSH_USER'
           )
         ]) {
+          sh '''
+            set -e
 
-          sh """
-            scp -i \$MY_SSH_KEY -o StrictHostKeyChecking=no \
-              ${env.APP_DIR}/${env.ARCHIVE} \
-              \$SSH_USER@${env.SERVER_IP}:/home/\$SSH_USER/
-          """
+            echo "Deploying to $SSH_USER@$SERVER_IP"
 
-          sh """
-            ssh -i \$MY_SSH_KEY -o StrictHostKeyChecking=no \$SSH_USER@${env.SERVER_IP} << EOF
+            scp -i "$MY_SSH_KEY" -o StrictHostKeyChecking=no \
+              "$APP_DIR/$ARCHIVE" \
+              "$SSH_USER@$SERVER_IP:/home/$SSH_USER/$ARCHIVE"
+
+            ssh -i "$MY_SSH_KEY" -o StrictHostKeyChecking=no \
+              "$SSH_USER@$SERVER_IP" << EOF
               set -e
 
-              mkdir -p /home/\$SSH_USER/${env.REMOTE_DIR}
-              tar -xzf /home/\$SSH_USER/${env.ARCHIVE} -C /home/\$SSH_USER/${env.REMOTE_DIR}
+              mkdir -p "/home/$SSH_USER/$REMOTE_DIR"
+              rm -rf "/home/$SSH_USER/$REMOTE_DIR"/*
+              tar -xzf "/home/$SSH_USER/$ARCHIVE" -C "/home/$SSH_USER/$REMOTE_DIR"
 
-              cd /home/\$SSH_USER/${env.REMOTE_DIR}
+              cd "/home/$SSH_USER/$REMOTE_DIR"
 
               python3 -m venv venv
               . venv/bin/activate
               pip install --upgrade pip
               pip install -r requirements.txt
 
-              sudo systemctl restart ${env.SERVICE}
-              sudo systemctl is-active --quiet ${env.SERVICE}
+              # Stop old process on port (best-effort)
+              if command -v lsof >/dev/null 2>&1; then
+                PID=$(lsof -ti :$APP_PORT || true)
+                if [ -n "$PID" ]; then kill -9 $PID; fi
+              else
+                pkill -f "flask run" || true
+                pkill -f "gunicorn" || true
+              fi
 
-              echo "Deployment Successful!"
+              # Start app (demo)
+              nohup bash -c 'export FLASK_APP=app.py; export FLASK_ENV=production; flask run --host=0.0.0.0 --port='"$APP_PORT" \
+                > app.log 2>&1 &
+
+              sleep 2
+              tail -n 20 app.log || true
 EOF
-          """
+          '''
         }
       }
     }
   }
 
   post {
-    always {
-      cleanWs()
-    }
+    always { cleanWs() }
   }
 }
