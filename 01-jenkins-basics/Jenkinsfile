@@ -7,7 +7,7 @@ pipeline {
     }
 
     stages {
-        stage('Setup') {
+        stage('Setup1') {
             steps {
                 dir('01-jenkins-basics') {
                     echo 'Creating Virtual Environment and Installing Requirements...'
