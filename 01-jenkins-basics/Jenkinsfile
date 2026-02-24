@@ -2,7 +2,7 @@ pipeline {
   agent any
 
   environment {
-    SERVER_IP  = credentials('Prod-server-ip') // Secret Text
+    SERVER_IP  = credentials('Prod-server-ip')
     APP_DIR    = '01-jenkins-basics'
     ARCHIVE    = 'myapp.tar.gz'
     REMOTE_DIR = 'app'
@@ -10,6 +10,7 @@ pipeline {
   }
 
   stages {
+
     stage('Setup') {
       steps {
         dir("${env.APP_DIR}") {
@@ -38,14 +39,29 @@ pipeline {
       steps {
         dir("${env.APP_DIR}") {
           sh '''
+            set -e
             rm -f myapp.tar.gz
+
+            # tar exit codes:
+            # 0 = success
+            # 1 = warnings (e.g., file changed while reading) -> acceptable for CI packaging
+            # 2 = fatal error
             tar --warning=no-file-changed \
                 --exclude=.git \
                 --exclude=.venv \
                 --exclude=venv \
                 --exclude=__pycache__ \
                 --exclude='*.pyc' \
-                -czf myapp.tar.gz .
+                -czf myapp.tar.gz . || RC=$?
+
+            RC=${RC:-0}
+            if [ "$RC" -eq 2 ]; then
+              echo "tar failed with fatal exit code 2"
+              exit 2
+            fi
+
+            echo "tar completed (exit code: $RC)"
+            ls -lh myapp.tar.gz
           '''
         }
       }
@@ -103,7 +119,7 @@ pipeline {
                 > app.log 2>&1 &
 
               sleep 2
-              tail -n 20 app.log || true
+              tail -n 30 app.log || true
 EOF
           '''
         }
