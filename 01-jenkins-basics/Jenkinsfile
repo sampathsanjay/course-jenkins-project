@@ -1,60 +1,131 @@
-stage('Deploy to Prod') {
-  input {
-    message "Deploy to production?"
-    ok "Deploy"
+pipeline {
+  agent any
+
+  environment {
+    SERVER_IP  = credentials('Prod-server-ip')   // Secret Text
+    APP_DIR    = '01-jenkins-basics'
+    ARCHIVE    = 'myapp.tar.gz'
+    REMOTE_DIR = 'app'
+    APP_PORT   = '5000'
   }
 
-  steps {
-    withCredentials([
-      sshUserPrivateKey(
-        credentialsId: 'SSH-KEY',
-        keyFileVariable: 'MY_SSH_KEY',
-        usernameVariable: 'SSH_USER'
-      )
-    ]) {
-      sh '''
-        set -e
+  stages {
 
-        SSH_USER_TRIMMED="$(echo "$SSH_USER" | xargs)"
-        SERVER_IP_TRIMMED="$(echo "$SERVER_IP" | xargs)"
-
-        echo "Deploying to ${SSH_USER_TRIMMED}@${SERVER_IP_TRIMMED}"
-
-        scp -i "$MY_SSH_KEY" -o StrictHostKeyChecking=no \
-          "$APP_DIR/$ARCHIVE" \
-          "${SSH_USER_TRIMMED}@${SERVER_IP_TRIMMED}:/home/${SSH_USER_TRIMMED}/${ARCHIVE}"
-
-        ssh -i "$MY_SSH_KEY" -o StrictHostKeyChecking=no \
-          "${SSH_USER_TRIMMED}@${SERVER_IP_TRIMMED}" << EOF
-          set -e
-
-          mkdir -p "/home/${SSH_USER_TRIMMED}/${REMOTE_DIR}"
-          rm -rf "/home/${SSH_USER_TRIMMED}/${REMOTE_DIR}"/*
-          tar -xzf "/home/${SSH_USER_TRIMMED}/${ARCHIVE}" -C "/home/${SSH_USER_TRIMMED}/${REMOTE_DIR}"
-
-          cd "/home/${SSH_USER_TRIMMED}/${REMOTE_DIR}"
-
-          python3 -m venv venv
-          . venv/bin/activate
-          pip install --upgrade pip
-          pip install -r requirements.txt
-
-          # stop old process (best effort)
-          if command -v lsof >/dev/null 2>&1; then
-            PID=$(lsof -ti :$APP_PORT || true)
-            if [ -n "$PID" ]; then kill -9 $PID; fi
-          else
-            pkill -f "flask run" || true
-            pkill -f "gunicorn" || true
-          fi
-
-          nohup bash -c 'export FLASK_APP=app.py; export FLASK_ENV=production; flask run --host=0.0.0.0 --port='"$APP_PORT" \
-            > app.log 2>&1 &
-
-          sleep 2
-          tail -n 30 app.log || true
-EOF
-      '''
+    stage('Setup') {
+      steps {
+        dir("${env.APP_DIR}") {
+          sh '''
+            python3 -m venv .venv
+            . .venv/bin/activate
+            pip install --upgrade pip
+            pip install -r requirements.txt
+          '''
+        }
+      }
     }
+
+    stage('Test') {
+      steps {
+        dir("${env.APP_DIR}") {
+          sh '''
+            . .venv/bin/activate
+            pytest -q
+          '''
+        }
+      }
+    }
+
+    stage('Package') {
+      steps {
+        dir("${env.APP_DIR}") {
+          sh '''
+            set -e
+            rm -f myapp.tar.gz
+
+            tar --warning=no-file-changed \
+                --exclude=.git \
+                --exclude=.venv \
+                --exclude=venv \
+                --exclude=__pycache__ \
+                --exclude='*.pyc' \
+                -czf myapp.tar.gz . || RC=$?
+
+            RC=${RC:-0}
+            if [ "$RC" -eq 2 ]; then
+              echo "tar failed with fatal exit code 2"
+              exit 2
+            fi
+
+            echo "tar completed (exit code: $RC)"
+            ls -lh myapp.tar.gz
+          '''
+        }
+      }
+    }
+
+    stage('Deploy to Prod') {
+      steps {
+        script {
+          input message: "Deploy to production?", ok: "Deploy"
+        }
+
+        withCredentials([
+          sshUserPrivateKey(
+            credentialsId: 'SSH-KEY',
+            keyFileVariable: 'MY_SSH_KEY',
+            usernameVariable: 'SSH_USER'
+          )
+        ]) {
+          sh '''
+            set -e
+
+            SSH_USER_TRIMMED="$(echo "$SSH_USER" | xargs)"
+            SERVER_IP_TRIMMED="$(echo "$SERVER_IP" | xargs)"
+
+            echo "Deploying to ${SSH_USER_TRIMMED}@${SERVER_IP_TRIMMED}"
+
+            scp -i "$MY_SSH_KEY" -o StrictHostKeyChecking=no \
+              "$APP_DIR/$ARCHIVE" \
+              "${SSH_USER_TRIMMED}@${SERVER_IP_TRIMMED}:/home/${SSH_USER_TRIMMED}/${ARCHIVE}"
+
+            ssh -i "$MY_SSH_KEY" -o StrictHostKeyChecking=no \
+              "${SSH_USER_TRIMMED}@${SERVER_IP_TRIMMED}" << EOF
+              set -e
+
+              mkdir -p "/home/${SSH_USER_TRIMMED}/${REMOTE_DIR}"
+              rm -rf "/home/${SSH_USER_TRIMMED}/${REMOTE_DIR}"/*
+              tar -xzf "/home/${SSH_USER_TRIMMED}/${ARCHIVE}" -C "/home/${SSH_USER_TRIMMED}/${REMOTE_DIR}"
+
+              cd "/home/${SSH_USER_TRIMMED}/${REMOTE_DIR}"
+
+              python3 -m venv venv
+              . venv/bin/activate
+              pip install --upgrade pip
+              pip install -r requirements.txt
+
+              # Stop old process on port (best-effort)
+              if command -v lsof >/dev/null 2>&1; then
+                PID=$(lsof -ti :$APP_PORT || true)
+                if [ -n "$PID" ]; then kill -9 $PID; fi
+              else
+                pkill -f "flask run" || true
+                pkill -f "gunicorn" || true
+              fi
+
+              # Start Flask (demo)
+              nohup bash -c 'export FLASK_APP=app.py; export FLASK_ENV=production; flask run --host=0.0.0.0 --port='"$APP_PORT" \
+                > app.log 2>&1 &
+
+              sleep 2
+              tail -n 30 app.log || true
+EOF
+          '''
+        }
+      }
+    }
+  }
+
+  post {
+    always { cleanWs() }
   }
 }
