@@ -1,40 +1,97 @@
 pipeline {
-  agent any
+    agent any
 
-  stages {
-    stage('Setup') {
-      steps {
-        dir('01-jenkins-basics') {
-          sh '''
-            python3 -m venv .venv
-            . .venv/bin/activate
-            pip install --upgrade pip
-            pip install -r requirements.txt
-          '''
+    environment {
+        // Pulling the IP from your credentials store
+        SERVER_IP = credentials('Prod-server-ip')
+    }
+
+    stages {
+        stage('Setup') {
+            steps {
+                dir('01-jenkins-basics') {
+                    echo 'Creating Virtual Environment and Installing Requirements...'
+                    sh '''
+                        python3 -m venv .venv
+                        . .venv/bin/activate
+                        pip install --upgrade pip
+                        pip install -r requirements.txt
+                    '''
+                }
+            }
         }
-      }
-    }
 
-    stage('Test') {
-      steps {
-        dir('01-jenkins-basics') {
-          sh '''
-            . .venv/bin/activate
-            pytest -q
-          '''
+        stage('Test') {
+            steps {
+                dir('01-jenkins-basics') {
+                    echo 'Running Unit Tests...'
+                    sh '''
+                        . .venv/bin/activate
+                        pytest -q
+                    '''
+                }
+            }
         }
-      }
+
+        stage('Package') {
+            steps {
+                dir('01-jenkins-basics') {
+                    echo 'Packaging Application...'
+                    // Zip content, excluding the local venv and git files
+                    sh 'zip -r myapp.zip ./* -x "*.git*" -x "*.venv*"'
+                }
+            }
+        }
+
+        stage('Deploy to Prod') {
+            // This stage asks for permission before touching the server
+            input {
+                message "Deploy to ${SERVER_IP}?"
+                ok "Yes, Deploy"
+            }
+            steps {
+                withCredentials([sshUserPrivateKey(credentialsId: 'SSH-KEY', 
+                                 keyFileVariable: 'MY_SSH_KEY', 
+                                 usernameVariable: 'username')]) {
+                    
+                    echo "Shipping code to ${SERVER_IP}..."
+                    
+                    // 1. Upload the zip to the home directory
+                    sh "scp -i $MY_SSH_KEY -o StrictHostKeyChecking=no 01-jenkins-basics/myapp.zip ${username}@${SERVER_IP}:/home/${username}/"
+
+                    // 2. SSH in to extract, install, and restart
+                    sh """
+                        ssh -i $MY_SSH_KEY -o StrictHostKeyChecking=no ${username}@${SERVER_IP} << 'EOF'
+                            # Prepare directory
+                            mkdir -p /home/${username}/app
+                            unzip -o /home/${username}/myapp.zip -d /home/${username}/app/
+                            
+                            # Navigate and refresh environment
+                            cd /home/${username}/app/
+                            python3 -m venv venv
+                            source venv/bin/activate
+                            pip install -r requirements.txt
+                            
+                            # Restart the background service
+                            sudo systemctl restart flaskapp.service
+                            echo 'Deployment Successful!'
+EOF
+                    """
+                }
+            }
+        }
     }
 
-    stage('Deployment') {
-      input {
-        message 'Do you want to proceed further?'
-        ok 'Yes'
-      }
-      steps {
-        echo 'Running Deployment'
-      }
+    post {
+        success {
+            echo 'Pipeline completed successfully!'
+        }
+        failure {
+            echo 'Pipeline failed. Check the console output above.'
+        }
+        always {
+            // Clean up the workspace to save disk space on your EC2
+            cleanWs()
+        }
     }
-  }
 }
-
