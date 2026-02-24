@@ -1,97 +1,97 @@
 pipeline {
-    agent any
+  agent any
 
-    environment {
-        // Pulling the IP from your credentials store
-        SERVER_IP = credentials('Prod-server-ip')
+  environment {
+    SERVER_IP = credentials('Prod-server-ip') // store as Secret Text
+    APP_DIR   = '01-jenkins-basics'
+    ZIP_NAME  = 'myapp.zip'
+    REMOTE_DIR = 'app'
+    SERVICE   = 'flaskapp.service'
+  }
+
+  stages {
+    stage('Setup') {
+      steps {
+        dir("${env.APP_DIR}") {
+          sh '''
+            python3 -m venv .venv
+            . .venv/bin/activate
+            pip install --upgrade pip
+            pip install -r requirements.txt
+          '''
+        }
+      }
     }
 
-    stages {
-        stage('Setup1') {
-            steps {
-                dir('01-jenkins-basics') {
-                    echo 'Creating Virtual Environment and Installing Requirements...'
-                    sh '''
-                        python3 -m venv .venv
-                        . .venv/bin/activate
-                        pip install --upgrade pip
-                        pip install -r requirements.txt
-                    '''
-                }
-            }
+    stage('Test') {
+      steps {
+        dir("${env.APP_DIR}") {
+          sh '''
+            . .venv/bin/activate
+            pytest -q
+          '''
         }
+      }
+    }
 
-        stage('Test') {
-            steps {
-                dir('01-jenkins-basics') {
-                    echo 'Running Unit Tests...'
-                    sh '''
-                        . .venv/bin/activate
-                        pytest -q
-                    '''
-                }
-            }
+    stage('Package') {
+      steps {
+        dir("${env.APP_DIR}") {
+          sh """
+            rm -f ${env.ZIP_NAME}
+            zip -r ${env.ZIP_NAME} . \
+              -x ".git/*" -x ".venv/*" -x "__pycache__/*" -x "*.pyc"
+          """
         }
+      }
+    }
 
-        stage('Package') {
-            steps {
-                dir('01-jenkins-basics') {
-                    echo 'Packaging Application...'
-                    // Zip content, excluding the local venv and git files
-                    sh 'zip -r myapp.zip ./* -x "*.git*" -x "*.venv*"'
-                }
-            }
-        }
+    stage('Deploy to Prod') {
+      input {
+        message "Deploy to ${env.SERVER_IP}?"
+        ok "Yes, Deploy"
+      }
 
-        stage('Deploy to Prod') {
-            // This stage asks for permission before touching the server
-            input {
-                message "Deploy to ${SERVER_IP}?"
-                ok "Yes, Deploy"
-            }
-            steps {
-                withCredentials([sshUserPrivateKey(credentialsId: 'SSH-KEY', 
-                                 keyFileVariable: 'MY_SSH_KEY', 
-                                 usernameVariable: 'username')]) {
-                    
-                    echo "Shipping code to ${SERVER_IP}..."
-                    
-                    // 1. Upload the zip to the home directory
-                    sh "scp -i $MY_SSH_KEY -o StrictHostKeyChecking=no 01-jenkins-basics/myapp.zip ${username}@${SERVER_IP}:/home/${username}/"
+      steps {
+        withCredentials([sshUserPrivateKey(credentialsId: 'SSH-KEY',
+                          keyFileVariable: 'MY_SSH_KEY',
+                          usernameVariable: 'SSH_USER')]) {
 
-                    // 2. SSH in to extract, install, and restart
-                    sh """
-                        ssh -i $MY_SSH_KEY -o StrictHostKeyChecking=no ${username}@${SERVER_IP} << 'EOF'
-                            # Prepare directory
-                            mkdir -p /home/${username}/app
-                            unzip -o /home/${username}/myapp.zip -d /home/${username}/app/
-                            
-                            # Navigate and refresh environment
-                            cd /home/${username}/app/
-                            python3 -m venv venv
-                            source venv/bin/activate
-                            pip install -r requirements.txt
-                            
-                            # Restart the background service
-                            sudo systemctl restart flaskapp.service
-                            echo 'Deployment Successful!'
+          sh """
+            scp -i $MY_SSH_KEY -o StrictHostKeyChecking=no \
+              ${env.APP_DIR}/${env.ZIP_NAME} \
+              $SSH_USER@${env.SERVER_IP}:/home/$SSH_USER/${env.ZIP_NAME}
+          """
+
+          // NOTE: no single-quoted heredoc so $SSH_USER expands locally before sending
+          sh """
+            ssh -i $MY_SSH_KEY -o StrictHostKeyChecking=no $SSH_USER@${env.SERVER_IP} << EOF
+              set -e
+
+              mkdir -p /home/$SSH_USER/${env.REMOTE_DIR}
+              unzip -o /home/$SSH_USER/${env.ZIP_NAME} -d /home/$SSH_USER/${env.REMOTE_DIR}
+
+              cd /home/$SSH_USER/${env.REMOTE_DIR}
+
+              python3 -m venv venv
+              . venv/bin/activate
+              pip install --upgrade pip
+              pip install -r requirements.txt
+
+              sudo systemctl restart ${env.SERVICE}
+              sudo systemctl is-active --quiet ${env.SERVICE}
+
+              echo "Deployment Successful!"
 EOF
-                    """
-                }
-            }
+          """
         }
+      }
     }
+  }
 
-    post {
-        success {
-            echo 'Pipeline completed successfully!'
-        }
-        failure {
-            echo 'Pipeline failed. Check the console output above.'
-        }
-        always {
-            // Clean up the workspace to save disk space on your EC2
-            cleanWs()
-        }
+  post {
+    always {
+      cleanWs()
     }
+  }
 }
