@@ -15,6 +15,9 @@ pipeline {
       steps {
         dir("${env.APP_DIR}") {
           sh '''
+            sudo apt-get update -y
+            sudo apt-get install -y python3.12-venv
+
             python3 -m venv .venv
             . .venv/bin/activate
             pip install --upgrade pip
